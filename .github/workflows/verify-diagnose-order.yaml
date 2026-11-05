@@ -1,0 +1,41 @@
+name: Verify diagnose --id order (#161)
+on:
+  push:
+    branches: [verify-diagnose-order]
+  workflow_dispatch:
+jobs:
+  verify:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: verify
+      - name: Install dependencies and set up vcan0 for CAN FD
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake libcli11-dev ninja-build pkg-config
+          echo "kernel: $(uname -r)"
+          sudo modprobe vcan || { sudo apt-get install -y "linux-modules-extra-$(uname -r)" && sudo modprobe vcan; }
+          sudo ip link add dev vcan0 type vcan
+          sudo ip link set vcan0 mtu 72
+          sudo ip link set up vcan0
+          ip -details link show vcan0
+      - name: Build openarm-can-cli from upstream main and from the fix
+        run: |
+          git clone -q https://github.com/enactic/openarm_can.git upstream
+          git clone -q --branch diagnose-ids-any-order https://github.com/pradeepsuryad/openarm_can.git fix
+          for d in upstream fix; do
+            echo "$d: $(git -C "$d" log -1 --format='%h %s')"
+            cmake -S "$d" -B "$d-build" -GNinja > /dev/null
+            ninja -C "$d-build" openarm-can-cli > /dev/null
+          done
+      - name: Check upstream main (expected to fail --id 8,1 and --id 1,1)
+        run: |
+          bash verify/ci-verify/check_diagnose_order.sh ./upstream-build/openarm-can-cli && { echo "UNEXPECTED: upstream passed"; exit 1; } || echo "as expected: upstream fails"
+      - name: Check the fix (branch diagnose-ids-any-order)
+        run: bash verify/ci-verify/check_diagnose_order.sh ./fix-build/openarm-can-cli
