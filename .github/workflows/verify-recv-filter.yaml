@@ -1,0 +1,61 @@
+name: Verify receive filters (#165)
+on:
+  push:
+    branches: [verify-recv-filter]
+  workflow_dispatch:
+jobs:
+  verify:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: verify
+      - name: Install dependencies and set up vcan0 for CAN FD
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake libcli11-dev ninja-build pkg-config
+          echo "kernel: $(uname -r)"
+          sudo modprobe vcan || { sudo apt-get install -y "linux-modules-extra-$(uname -r)" && sudo modprobe vcan; }
+          sudo ip link add dev vcan0 type vcan
+          sudo ip link set vcan0 mtu 72
+          sudo ip link set up vcan0
+          ip -details link show vcan0
+      - name: Build upstream main, the filter commit alone, and the whole branch
+        run: |
+          git clone -q https://github.com/enactic/openarm_can.git upstream
+          git clone -q --branch recv-filter https://github.com/pradeepsuryad/openarm_can.git fix
+          git clone -q --branch recv-filter https://github.com/pradeepsuryad/openarm_can.git filter-only
+          git -C filter-only checkout -q HEAD~1
+          for d in upstream filter-only fix; do
+            echo "$d: $(git -C "$d" log -1 --format='%h %s')"
+            cmake -S "$d" -B "$d-build" -GNinja -DCMAKE_INSTALL_PREFIX="$PWD/$d-install" > /dev/null
+            ninja -C "$d-build" install > /dev/null
+          done
+      - name: CANSocket receive filters (whole branch)
+        run: |
+          export PKG_CONFIG_PATH=$PWD/fix-install/lib/pkgconfig:$PWD/fix-install/lib/x86_64-linux-gnu/pkgconfig
+          g++ -std=c++17 verify/ci-verify/check_recv_filter.cpp $(pkg-config --cflags --libs openarm-can) -o check-recv-filter
+          LD_LIBRARY_PATH=$PWD/fix-install/lib:$PWD/fix-install/lib/x86_64-linux-gnu ./check-recv-filter
+      - name: diagnose and health beside another control loop, and with a motor on 0x00
+        run: |
+          status=0
+          expect() {
+            if bash verify/ci-verify/check_recv_filter.sh "$1" "$2"; then got=pass; else got=fail; fi
+            echo ">>> $1 $2: $got (expected $3)"
+            [ "$got" = "$3" ] || status=1
+          }
+          expect upstream-build control-loop fail
+          expect upstream-build rid7 pass
+          expect filter-only-build control-loop pass
+          expect filter-only-build rid7 fail
+          expect fix-build control-loop pass
+          expect fix-build rid7 pass
+          exit $status
+      - name: diagnose during a flood of other traffic (for information)
+        run: |
+          for d in upstream-build fix-build; do bash verify/ci-verify/check_recv_filter.sh "$d" flood; done
