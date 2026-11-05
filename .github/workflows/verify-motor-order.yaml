@@ -5,8 +5,12 @@ on:
   workflow_dispatch:
 jobs:
   verify:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -14,8 +18,9 @@ jobs:
       - name: Install dependencies and set up vcan0
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake libcli11-dev ninja-build pkg-config "linux-modules-extra-$(uname -r)"
-          sudo modprobe vcan
+          sudo apt-get install -y cmake libcli11-dev ninja-build pkg-config
+          echo "kernel: $(uname -r)"
+          sudo modprobe vcan || { sudo apt-get install -y "linux-modules-extra-$(uname -r)" && sudo modprobe vcan; }
           sudo ip link add dev vcan0 type vcan
           sudo ip link set up vcan0
           ip -details link show vcan0
