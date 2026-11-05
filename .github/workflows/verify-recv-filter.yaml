@@ -30,18 +30,26 @@ jobs:
           git clone -q https://github.com/enactic/openarm_can.git upstream
           git clone -q --branch recv-filter https://github.com/pradeepsuryad/openarm_can.git fix
           git clone -q --branch recv-filter https://github.com/pradeepsuryad/openarm_can.git filter-only
-          git -C filter-only checkout -q HEAD~1
+          git -C filter-only checkout -q HEAD~2
           for d in upstream filter-only fix; do
             echo "$d: $(git -C "$d" log -1 --format='%h %s')"
             cmake -S "$d" -B "$d-build" -GNinja -DCMAKE_INSTALL_PREFIX="$PWD/$d-install" > /dev/null
             ninja -C "$d-build" install > /dev/null
           done
-      - name: CANSocket receive filters (whole branch)
+      - name: CANSocket receive filters (filter commit alone, then the whole branch)
         run: |
-          export PKG_CONFIG_PATH=$PWD/fix-install/lib/pkgconfig:$PWD/fix-install/lib/x86_64-linux-gnu/pkgconfig
-          g++ -std=c++17 verify/ci-verify/check_recv_filter.cpp $(pkg-config --cflags --libs openarm-can) -o check-recv-filter
-          LD_LIBRARY_PATH=$PWD/fix-install/lib:$PWD/fix-install/lib/x86_64-linux-gnu ./check-recv-filter
-      - name: diagnose and health beside another control loop, and with a motor on 0x00
+          status=0
+          for d in filter-only fix; do
+            export PKG_CONFIG_PATH=$PWD/$d-install/lib/pkgconfig:$PWD/$d-install/lib/x86_64-linux-gnu/pkgconfig
+            g++ -std=c++17 verify/ci-verify/check_recv_filter.cpp $(pkg-config --cflags --libs openarm-can) -o "check-$d"
+            echo "##### $d"
+            if LD_LIBRARY_PATH=$PWD/$d-install/lib:$PWD/$d-install/lib/x86_64-linux-gnu "./check-$d"; then got=pass; else got=fail; fi
+            want=pass; [ "$d" = filter-only ] && want=fail
+            echo ">>> $d: $got (expected $want)"
+            [ "$got" = "$want" ] || status=1
+          done
+          exit $status
+      - name: diagnose and health beside another control loop, with a motor on 0x00, and in a flood
         run: |
           status=0
           expect() {
@@ -51,11 +59,11 @@ jobs:
           }
           expect upstream-build control-loop fail
           expect upstream-build rid7 pass
-          expect filter-only-build control-loop pass
+          expect upstream-build flood fail
           expect filter-only-build rid7 fail
           expect fix-build control-loop pass
           expect fix-build rid7 pass
+          expect fix-build flood pass
           exit $status
-      - name: diagnose during a flood of other traffic (for information)
-        run: |
-          for d in upstream-build fix-build; do bash verify/ci-verify/check_recv_filter.sh "$d" flood; done
+      - name: The filter commit alone in a flood (for information)
+        run: bash verify/ci-verify/check_recv_filter.sh filter-only-build flood || true

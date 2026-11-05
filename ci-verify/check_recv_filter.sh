@@ -11,8 +11,9 @@
 #                 (RID 7) was never set does. Passes if diagnose and health
 #                 both report 0x00 as unmatched.
 #   flood         Frames on 0x123 as fast as the bus takes them while
-#                 diagnose runs against motor 0x01. Prints the report and
-#                 always passes.
+#                 diagnose runs against motor 0x01. Passes if diagnose
+#                 reports no unmatched frames and 0x01 lost under 1% of its
+#                 replies.
 
 set -u
 
@@ -32,6 +33,16 @@ check() {
         echo "  FAIL  $what"
         fail=1
     fi
+}
+
+# loss ID OUT: "under" if ID lost under 1% of its replies, per section (2b)
+# of the diagnose report in OUT, otherwise "over".
+loss() {
+    awk -v id="$1" '
+        index($0, "--- (2b) ") == 1 { f = 1; next }
+        /^--- / { f = 0 }
+        f && $1 == id { under = ($4 * 100 < $2) }
+        END { print (under ? "under" : "over") }' "$2"
 }
 
 # start COMMAND...: runs COMMAND in the background until the scenario ends.
@@ -79,6 +90,9 @@ flood)
     start python3 "$here/flood.py" vcan0 0x123
     sleep 1
     run diag.txt "$build/openarm-can-cli" -i vcan0 diagnose --id 1 -d 1000 -t 10
+    echo "--- checks"
+    check "diagnose (3): no unmatched frames" test -z "$(grep "^ Unmatched :" diag.txt)"
+    check "(2b): 0x01 lost under 1% of its replies" test "$(loss 0x01 diag.txt)" = under
     ;;
 *)
     echo "unknown scenario: $scenario"
