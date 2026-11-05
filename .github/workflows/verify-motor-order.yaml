@@ -1,0 +1,39 @@
+name: Verify motor order (#162)
+on:
+  push:
+    branches: [verify-motor-order]
+  workflow_dispatch:
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: verify
+      - name: Install dependencies and set up vcan0
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake libcli11-dev ninja-build pkg-config "linux-modules-extra-$(uname -r)"
+          sudo modprobe vcan
+          sudo ip link add dev vcan0 type vcan
+          sudo ip link set up vcan0
+          ip -details link show vcan0
+      - name: Check upstream main (expected to fail the descending case)
+        run: |
+          git clone -q https://github.com/enactic/openarm_can.git upstream
+          echo "upstream main: $(git -C upstream log -1 --format='%h %s')"
+          cmake -S upstream -B upstream-build -GNinja -DCMAKE_INSTALL_PREFIX=$PWD/upstream-install > /dev/null
+          ninja -C upstream-build install > /dev/null
+          export PKG_CONFIG_PATH=$PWD/upstream-install/lib/pkgconfig:$PWD/upstream-install/lib/x86_64-linux-gnu/pkgconfig
+          g++ -std=c++17 verify/ci-verify/check_motor_order.cpp $(pkg-config --cflags --libs openarm-can) -o check-upstream
+          LD_LIBRARY_PATH=$PWD/upstream-install/lib:$PWD/upstream-install/lib/x86_64-linux-gnu ./check-upstream && echo "UNEXPECTED: upstream passed" && exit 1 || echo "as expected: upstream fails"
+      - name: Check the fix (branch keep-motor-order)
+        run: |
+          git clone -q --branch keep-motor-order https://github.com/pradeepsuryad/openarm_can.git fix
+          echo "fix: $(git -C fix log -1 --format='%h %s')"
+          cmake -S fix -B fix-build -GNinja -DCMAKE_INSTALL_PREFIX=$PWD/fix-install > /dev/null
+          ninja -C fix-build install > /dev/null
+          export PKG_CONFIG_PATH=$PWD/fix-install/lib/pkgconfig:$PWD/fix-install/lib/x86_64-linux-gnu/pkgconfig
+          g++ -std=c++17 verify/ci-verify/check_motor_order.cpp $(pkg-config --cflags --libs openarm-can) -o check-fix
+          LD_LIBRARY_PATH=$PWD/fix-install/lib:$PWD/fix-install/lib/x86_64-linux-gnu ./check-fix
